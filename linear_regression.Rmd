@@ -1,0 +1,206 @@
+---
+title: "brms Tutorial"
+author: "Jorge Sinval"
+date: "`r Sys.Date()`"
+output: html_document
+---
+    
+```{r setup}
+library(brms)
+library(tidyverse)
+library(RColorBrewer)
+library(ggmcmc)
+library(ggthemes)
+library(ggridges)
+
+
+theme_set(theme_minimal())
+
+set.seed(1)
+```
+
+```{r}
+ds <- readr::read_csv('https://ndownloader.figshare.com/files/22299075') #load the dataset
+```
+
+```{r}
+ds$js <- rowMeans(x = ds[, paste0("SIJS", 1:5)]) 
+ds$qwl <- rowMeans(x = ds[, paste0("QWLS", 1:16)])
+ds$b <- rowMeans(x = ds[, paste0("OLBI", c(1:12,14:16))])
+ds$we <- rowMeans(x = ds[, paste0("UWES", 1:9)])
+
+ds_red <- ds |> dplyr::filter(Socioeconomic_status=="A1"|Socioeconomic_status=="A2"|Socioeconomic_status=="B1")
+```
+
+
+```{r}
+t.test(ds_red$js[ds_red$Country=="Brazil"],
+       ds_red$js[ds_red$Country=="Portugal"])
+```
+
+```{r}
+fit <-  lm(js ~ Country, data=ds_red)
+summary(fit)
+```
+
+```{r}
+fit2 <-  lm(js ~ factor(Sex) + factor(Country), data=ds_red)
+summary(fit2)
+```
+
+```{r}
+fit3 <-  lm(js ~ factor(Country) + factor(Sex) + b, data = ds)
+
+summary(fit3)
+```
+
+```{r}
+fit4 = brm(js ~ factor(Sex) + factor(Country) + b,
+           data=ds,
+           prior = set_prior("student_t(3, 0.6, 3)", class = "Intercept"),
+           iter = 1000
+)
+```
+
+```{r}
+summary(fit4)
+```
+
+```{r}
+get_prior(js ~ factor(Sex) + factor(Country) + b,
+          data=ds)
+```
+
+
+# Burnout?
+
+# "See" the data
+
+```{r}
+ggplot(data  = ds,
+       aes(x = b,
+           y = js))+
+  geom_point(size = 1.2,
+             alpha = .8,
+             position = "jitter")+# to add some random noise for plotting purposes
+  theme_minimal()+
+  labs(title = "Burnout vs. Job Satisfaction")
+```
+
+```{r}
+#Now we can add a regression line to this plot.
+
+ggplot(data  = ds,
+       aes(x = b,
+           y = js))+
+  geom_point(size     = 1.2,
+             alpha    = .8,
+             position = "jitter")+ #to add some random noise for plotting purposes
+  geom_smooth(method = lm,
+              se     = FALSE, 
+              col    = "black",
+              size   = .5, 
+              alpha  = .8)+ # to add regression line
+  theme_minimal()+
+  labs(title    = "Burnout vs. Job Satisfaction",
+       subtitle = "add regression line")
+```
+
+
+#Intercept only model
+
+Since the brms package (via STAN) makes use of a Hamiltonian Monte Carlo sampler algorithm (MCMC) to approximate the posterior (distribution), we need to specify a few more parameters than in a frequentist analysis (using lm).  
+
+  + First we need the specify how many iteration we want the MCMC to run.  
+  + We need to specify how many chains we want to run.  
+  + We need to specify how many iterations we want to discard per chain (warmup or burnin phase).  
+  + We need to specify what our initial values are for the different chains for the parameters of interest. or we can just tell brms that we want random values as initial values.  
+  + We need to specify all these values for replicability purposes. In addition, if the two chains would not converge we can specify more iterations, different starting values and a longer warmup period. Thankfully brms will tell us if the sampler is likely to be non-converged.  
+  + The first model that we replicate is a model with three v.i.'s If we look at the different inputs for the brm() function we:  
+
+  - have “js”, which indicates the dependent variable we want to predict.  
+  - a “~”, that we use to indicate that we now give the other variables of interest.  
+  - a “1” in the formula the function indicates the intercept.  
+
+
+
+```{r}
+model1 <- brm(js ~ 1 + Sex + Country + b,  
+              data = ds, 
+              warmup = 1000, iter = 3000, 
+              cores = 2, chains = 2, 
+              seed = 123) #to run the model
+```
+
+We do not yet specify any priors for the regression coefficients, which means that BRMS will pick priors that are non or very weakly informative, so that their influence on the results will be negligible.
+
+
+```{r}
+model1tranformed <- ggs(model1) # the ggs function transforms the brms output into a longformat tibble, that we can use to make different types of plots.
+```
+
+```{r}
+ggplot(dplyr::filter(model1tranformed, Parameter %in% c("b_Intercept", "b_SexMale", "b_CountryPortugal","b_b")),
+       aes(x   = Iteration,
+           y   = value, 
+           col = as.factor(Chain)))+
+  geom_line() +
+  geom_vline(xintercept = 1000)+
+  facet_grid(Parameter ~ . ,
+             scale  = 'free_y',
+             switch = 'y')+
+  labs(title = "Caterpillar Plots", 
+       col   = "Chains")
+```
+
+The intercept is now ... (which represent the mean of the posterior distribution), the mean of the posterior for the regression coefficient for sex is ..., and the regression coefficient for burnout is . In a Bayesian analysis we do not have p-values as we do have a frequentist analysis and corresponding hypothesis tests. To test whether all regression coefficients are different from zero, we can look at the Credible Intervals that are listed in the summary output or we can visually represent them in density plots. If we do so, we clearly see that zero is not included in any of the density plots, meaning that we can be reasonably certain the regression coefficients are different from zero.
+
+```{r}
+ggplot(dplyr::filter(model1tranformed,
+              Parameter == "b_Intercept", 
+              Iteration > 1000),
+       aes(x = value))+
+  geom_density(fill  = "yellow", 
+               alpha = .5)+
+  geom_vline(xintercept = 0, 
+             col  = "red",
+             size = 1)+
+  scale_x_continuous(name   = "Value",
+                     limits = c(5.7, 6.3)) + 
+  geom_vline(xintercept = unlist(summary(model1)$fixed[1,3:4]),
+             col = "blue",
+             linetype = 2) +
+  theme_light() +
+  labs(title = "Posterior Density of Intercept")
+```
+
+
+```{r}
+ggplot(dplyr::filter(model1tranformed, Parameter == "b_b", Iteration > 1000), aes(x = value))+
+  geom_density(fill = "orange", alpha = .5)+
+  geom_vline(xintercept = 0, col = "red", size = 1)+
+  scale_x_continuous(name = "Value", limits = c(-1, -.8))+ 
+  geom_vline(xintercept = unlist(summary(model1)$fixed[3,3:4]), col = "blue", linetype = 2)+
+  theme_light()+
+  labs(title = "Posterior Density of Regression Coefficient for Burnout")
+```
+
+```{r}
+ggplot(dplyr::filter(model1tranformed, Parameter == "b_SexMale", Iteration > 1000), aes(x = value))+
+  geom_density(fill = "red", alpha = .5)+
+  geom_vline(xintercept = 0, col = "red", size = 1)+
+  scale_x_continuous(name = "Value")+ 
+  geom_vline(xintercept = unlist(summary(model1)$fixed[2,3:4]), col = "blue", linetype = 2)+
+  theme_light()+
+  labs(title = "Posterior Density of Regression Coefficient for Sex")
+```
+
+```{r}
+ggplot(dplyr::filter(model1tranformed, Parameter == "b_CountryPortugal", Iteration > 1000), aes(x = value))+
+  geom_density(fill = "red", alpha = .5)+
+  geom_vline(xintercept = 0, col = "red", size = 1)+
+  scale_x_continuous(name = "Value")+ 
+  geom_vline(xintercept = unlist(summary(model1)$fixed[3,3:4]), col = "blue", linetype = 2)+
+  theme_light()+
+  labs(title = "Posterior Density of Regression Coefficient for Country")
+```
